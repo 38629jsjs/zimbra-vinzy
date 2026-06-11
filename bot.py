@@ -12,6 +12,7 @@ from datetime import datetime
 from email.mime.text import MIMEText
 
 import telebot
+from telebot import types
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -36,8 +37,8 @@ if not API_TOKEN:
 bot = telebot.TeleBot(API_TOKEN)
 WEB_URL = "https://access.stockgamer.id"
 
-# Thread-safe dictionary for active monitoring sessions
-# Layout: { chat_id: { "running": True, "email": "...", "password": "...", "started_at": datetime, "codes_intercepted": 0 } }
+# Multi-account monitoring session state tracking dictionary
+# Key architecture uses a compound design pattern: "chat_id-email"
 session_lock = threading.Lock()
 active_sessions = {}
 
@@ -50,24 +51,21 @@ def extract_verification_code(email_body_text):
     to extract 6-digit or 4-digit verification codes cleanly.
     """
     if not email_body_text:
-        return None, "Unknown Request"
+        return None, "Unknown Request Profile"
         
-    # Match standard Moonton/Zimbra 6-digit numerical codes (\b protects boundaries)
     code_match = re.search(r'\b\d{6}\b', email_body_text)
     if not code_match:
-        # Fallback query for common alternative 4-digit variations
         code_match = re.search(r'\b\d{4}\b', email_body_text)
         
-    extracted_code = code_match.group(0) if code_match else "UNKNOWN"
+    extracted_code = code_match.group(0) if code_match else None
     
-    # Context determination mapping
     context = "Account Alteration Request"
     lower_text = email_body_text.lower()
     if "verification" in lower_text:
         context = "New Device Login Verification"
-    if "password" in lower_text:
+    elif "password" in lower_text:
         context = "Credential / Password Modification Request"
-    if "unbind" in lower_text or "disconnect" in lower_text:
+    elif "unbind" in lower_text or "disconnect" in lower_text:
         context = "3rd Party Account Unbind Injection"
         
     return extracted_code, context
@@ -83,22 +81,18 @@ def evaluate_mail_routing_gateway(email_address):
     logging.info(f"Executing low-level SMTP routing handshake analysis for: {email_address}")
     
     try:
-        # Establish connection on incoming transmission port 25 with a tight safety fallback timeout
         server = smtplib.SMTP(target_mx_gateway, 25, timeout=7)
         server.ehlo("vinzybot.com")
         server.mail(spoofed_sender)
         
-        # Verify if mailbox address routing accepts input vectors or throws mailbox unavailable errors
         status_code, server_response_bytes = server.rcpt(email_address)
         server.quit()
         
         server_response = server_response_bytes.decode(errors="ignore")
         logging.info(f"Gateway Handshake Result Code: {status_code} - Response: {server_response}")
         
-        # 250 = Action completed, routing path completely open (SUBBED)
         if status_code == 250:
             return "SUBBED"
-        # 550 / 554 / 501 = Recipient address rejected or routing blocked by server rules (UNSUBBED/CLONED)
         elif status_code in [550, 554, 501, 551]:
             return "UNSUBBED_OR_CLONED"
         else:
@@ -108,15 +102,28 @@ def evaluate_mail_routing_gateway(email_address):
         logging.error(f"External SMTP routing execution handshake threw an error: {network_error}")
         return "CONNECTION_FAILURE"
 
+def generate_main_keyboard_menu():
+    """
+    Generates the high-efficiency 4-button programmatic menu layout interface.
+    """
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    btn_protect = types.KeyboardButton("🛡️ Protect Account")
+    btn_check = types.KeyboardButton("🔍 Check Status")
+    btn_status = types.KeyboardButton("📊 Active Monitors")
+    btn_stop = types.KeyboardButton("🛑 Stop Daemon")
+    markup.add(btn_protect, btn_check, btn_status, btn_stop)
+    return markup
+
 # ==========================================
 # 3. BACKGROUND CORE SCRAPING & PURGE DAEMON
 # ==========================================
 def zimbra_isolated_daemon_worker(chat_id, email, password):
     """
-    Dedicated background monitoring thread tracking the specific active session browser instance.
-    Features robust execution layers to prevent memory exhaustion and handle cloud timeouts gracefully.
+    Dedicated background monitoring thread tracking specific multi-account configurations.
+    Polled at ultra-aggressive 0.5-second thresholds with integrated session-drop alarms.
     """
-    logging.info(f"Launching independent headless worker instance for Chat ID target: {chat_id}")
+    session_key = f"{chat_id}-{email}"
+    logging.info(f"Launching independent headless worker instance for target context: {session_key}")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -124,17 +131,16 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # Block image assets to maximize load speeds
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     
     driver = None
     retry_count = 0
-    max_consecutive_retries = 5
+    max_consecutive_retries = 8
     
     try:
         driver = webdriver.Chrome(options=chrome_options)
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 15)
         
-        # Initialize Authentication Step
         driver.get(WEB_URL)
         username_field = wait.until(EC.presence_of_element_located((By.NAME, "username")))
         password_field = driver.find_element(By.NAME, "password")
@@ -144,123 +150,139 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
         password_field.send_keys(password)
         submit_button.click()
         
-        # Confirm login by tracking structural changes in the user interface
         time.sleep(4)
+        
         if "login" in driver.current_url.lower():
-            bot.send_message(chat_id, "❌ **Authentication Failed:** The server rejected your credentials. Double check your password and try again.")
+            bot.send_message(chat_id, f"❌ **Authentication Failed for Account:** `{email}`\n\nThe server rejected your credentials or the account was cloned before deployment.")
+            with session_lock:
+                if session_key in active_sessions:
+                    del active_sessions[session_key]
             return
 
         bot.send_message(
             chat_id, 
             f"🟢 **Vinzy Anti-Code Shield Active**\n\n"
-            f"👤 **Account:** `{email}`\n"
-            f"🛡️ **Status:** Monitoring inbox at 2-second loops. Any incoming codes will be instantly destroyed.",
+            f"👤 **Target Mailbox:** `{email}`\n"
+            f"⚡ **Loop Configuration:** `0.5s Turbo Mode`\n"
+            f"🛡️ **Status:** Monitoring layers are active. Your account is isolated.",
             parse_mode="Markdown"
         )
         
-        # Primary Loop Execution
         while True:
             with session_lock:
-                if chat_id not in active_sessions or not active_sessions[chat_id]["running"]:
+                if session_key not in active_sessions or not active_sessions[session_key]["running"]:
                     break
             
             try:
+                current_state_url = driver.current_url.lower()
+                if "login" in current_state_url or "err" in current_state_url:
+                    raise PermissionError("Authentication cookie dropped by host server")
+
                 driver.refresh()
-                time.sleep(2) # Stabilize DOM layout tree
+                time.sleep(0.5)
                 
-                # Scan DOM tree rows for elements matching the default Zimbra unread email classes
                 unread_rows = driver.find_elements(By.CLASS_NAME, "Unread")
                 
                 if unread_rows:
-                    logging.info(f"Intercepted {len(unread_rows)} unread mail elements inside {email}")
+                    logging.info(f"Intercepted unread transmission payload inside mailbox profile: {email}")
                     
                     for target_row in unread_rows:
                         try:
-                            # Highlight and open current email index
                             target_row.click()
-                            time.sleep(1)
+                            time.sleep(0.5)
                             
-                            # Fetch inner frame text
                             message_body_container = wait.until(EC.presence_of_element_located((By.ID, "zv__CONV__body")))
                             raw_extracted_text = message_body_container.text
                             
-                            # Parse elements cleanly using regex engine
                             secure_code, secure_context = extract_verification_code(raw_extracted_text)
                             
                             with session_lock:
-                                if chat_id in active_sessions:
-                                    active_sessions[chat_id]["codes_intercepted"] += 1
-                                    total_intercepts = active_sessions[chat_id]["codes_intercepted"]
-                                else:
-                                    total_intercepts = 1
-
-                            # Format and send intercepted update alert
-                            alert_payload = (
-                                f"🚨 ⚡ **VINZY CODE INTERCEPTED** ⚡ 🚨\n\n"
-                                f"📝 **Context:** `{secure_context}`\n"
-                                f"📧 **Account:** `{email}`\n\n"
-                                f"🔑 **EXTRACTED CODE:**\n"
-                                f"```\n{secure_code}\n
+                                if session_key in active_sessions:
+                                    active_sessions[session_key]["codes_intercepted"] += 1
+                            
+                            if secure_code:
+                                alert_payload = (
+                                    f"🚨 ⚡ **VINZY CODE INTERCEPTED** ⚡ 🚨\n\n"
+                                    f"👤 **Target Account:** `{email}`\n"
+                                    f"📝 **Context:** `{secure_context}`\n\n"
+                                    f"🔑 **EXTRACTED CODE:**\n"
+                                    f"```\n{secure_code}\n
 ```\n\n"
-                                f"🗑️ *Security Action: Email immediately stripped from Inbox and permanently deleted from trash.*"
-                            )
+                                    f"🗑️ *Security Action: Email immediately stripped from Inbox and permanently deleted from trash.*"
+                                )
+                            else:
+                                alert_payload = (
+                                    f"📩 **NEW INBOUND ZIMBRA TRANSMISSION LOGGED**\n\n"
+                                    f"👤 **Target Account:** `{email}`\n"
+                                    f"📝 **Log Status:** *System parameters did not match standard digits format. Relaying full content profile:* \n\n"
+                                    f"📋 **RAW EMAIL BODY CONTENT:**\n"
+                                    f"```\n{raw_extracted_text[:3500]}\n```\n\n"
+                                    f"🗑️ *Security Action: Content captured. Email stripped and purged.*"
+                                )
+                                
                             bot.send_message(chat_id, alert_payload, parse_mode="Markdown")
                             
-                            # Fire core delete action sequence
                             action_delete_button = driver.find_element(By.ID, "zb__CONV__DELETE")
                             action_delete_button.click()
+                            time.sleep(0.3)
+                            
+                            driver.execute_script("if(typeof ZmMailApp !== 'undefined') { ZmMailApp.prototype.emptyTrash(); }")
+                            
+                            driver.get(f"{WEB_URL}/?app=mail&folder=Inbox")
                             time.sleep(0.5)
                             
-                            # Direct Javascript engine injection bypasses slow UI clicks to dump backend trash folders instantly
-                            driver.execute_script("if(typeof ZmMailApp !== 'undefined') { ZmMailApp.prototype.emptyTrash(); }")
-                            logging.info(f"Executed direct programmatic JavaScript memory purge on server trash container.")
-                            
-                            # Return view hierarchy smoothly back to Inbox
-                            driver.get(f"{WEB_URL}/?app=mail&folder=Inbox")
-                            time.sleep(1)
-                            
                         except Exception as element_error:
-                            logging.error(f"Failed to process specific row entry loop: {element_error}")
+                            logging.error(f"Failed to process target sequence layout row: {element_error}")
                             continue
                             
-                retry_count = 0 # Loop completed successfully, clear connection errors tracking variables
+                retry_count = 0
                 
-            except Exception as loop_interruption:
+            except (PermissionError, Exception) as loop_interruption:
+                error_string = str(loop_interruption).lower()
+                
+                if "cookie" in error_string or "permission" in error_string or "login" in error_string:
+                    bot.send_message(
+                        chat_id,
+                        f"🚨 **CRITICAL ALERT: DETECTION OF MAIL CLONE / SESSION DROP** 🚨\n\n"
+                        f"❌ **Mailbox Account:** `{email}`\n"
+                        f"⚠️ **Notice:** Your tracking token was dropped by the server infrastructure. The seller or owner has executed a clone command.\n\n"
+                        f"🛑 *Shield Shutdown: Monitoring worker loop terminated. Secure your Moonton ID immediately!*",
+                        parse_mode="Markdown"
+                    )
+                    break
+                    
                 retry_count += 1
-                logging.warning(f"Worker loop connection fault experienced ({retry_count}/{max_consecutive_retries}): {loop_interruption}")
+                logging.warning(f"Worker tracking fault logged ({retry_count}/{max_consecutive_retries}): {loop_interruption}")
                 
                 if retry_count >= max_consecutive_retries:
-                    bot.send_message(chat_id, "⚠️ **Session Disconnect Detected:** Browser container connection crashed. Attempting full hot-reload recovery protocol...")
-                    raise loop_interruption # Force loop breaker rule down to parent restart catch block
+                    bot.send_message(chat_id, f"⚠️ **Network Interruption for `{email}`:** Connection crashed. Attempting hot-reload recovery protocol...")
+                    raise loop_interruption
                     
-            time.sleep(2) # Safe server throttling delay interval
+            time.sleep(0.5)
             
     except Exception as execution_crash:
-        logging.error(f"Fatal worker breakdown experienced for thread {chat_id}: {execution_crash}")
+        logging.error(f"Fatal worker breakdown experienced for target {session_key}: {execution_crash}")
         
-        # Hot-Reload Session Recovery Logic
         with session_lock:
-            should_recover = chat_id in active_sessions and active_sessions[chat_id]["running"]
+            should_recover = session_key in active_sessions and active_sessions[session_key]["running"]
             
         if should_recover:
-            logging.info(f"Triggering programmatic hot-reload thread restart loop sequence for Chat ID: {chat_id}")
-            time.sleep(5)
-            # Re-queue worker daemon sequentially to maintain persistent backend scanning execution loops
+            logging.info(f"Triggering programmatic hot-reload thread restart loop sequence for Context: {session_key}")
+            time.sleep(4)
             recovery_thread = threading.Thread(target=zimbra_monitor_worker, args=(chat_id, email, password))
             recovery_thread.daemon = True
             recovery_thread.start()
         else:
-            bot.send_message(chat_id, "🛑 **Shield Shutdown:** Your security monitoring system loop has terminated safely.")
+            bot.send_message(chat_id, f"🛑 **Shield Offline:** Security loop for `{email}` has terminated safely.")
             
     finally:
         if driver:
             try:
                 driver.quit()
-                logging.info(f"Clean resource collection complete. Headless driver for {chat_id} shut down.")
+                logging.info(f"Clean resource collection complete for context: {session_key}")
             except Exception as close_error:
-                logging.error(f"Driver resource dump error: {close_error}")
+                logging.error(f"Driver resource dump failure: {close_error}")
 
-# Wrapper logic to isolate threads safely
 def zimbra_monitor_worker(chat_id, email, password):
     try:
         zimbra_isolated_daemon_worker(chat_id, email, password)
@@ -271,39 +293,36 @@ def zimbra_monitor_worker(chat_id, email, password):
 # 4. BOT ROUTING TELEGRAM EVENT HANDLERS
 # ==========================================
 @bot.message_handler(commands=['start'])
+@bot.message_handler(func=lambda msg: msg.text == "👋 Start Menu")
 def send_welcome_interface(message):
     welcome_text = (
         f"👋 **Welcome to Vinzy Anti-Code Safe System Pro v2.6**\n\n"
-        f"Developed specifically for elite security management of BM accounts.\n\n"
-        f"🛠️ **Available System Commands:**\n"
-        f"🔹 `/protect` - Spawn an active headless browser tracking daemon to intercept and clear codes 24/7.\n"
-        f"🔹 `/check` - Ping server gateway routing rules to find out if mail state is **Subbed** or **Unsubbed** without requiring passwords.\n"
-        f"🔹 `/status` - Render the metrics, logs, and uptime charts of your currently running monitor instances.\n"
-        f"🔹 `/stop` - Close active scraping threads and kill browser system allocations cleanly."
+        f"Developed specifically for elite security management of BM accounts.\n"
+        f"Supports concurrent multi-account background scanning loops running at 0.5s speeds.\n\n"
+        f"🛠️ **Quick Action Dashboard Menus Attached Below:**"
     )
-    bot.reply_to(message, welcome_text, parse_mode="Markdown")
+    bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=generate_main_keyboard_menu())
 
 @bot.message_handler(commands=['check'])
+@bot.message_handler(func=lambda msg: msg.text == "🔍 Check Status")
 def handle_status_verification_request(message):
-    prompt = bot.reply_to(
-        message, 
-        "🔍 **Enter target Zimbra Mailbox to evaluate status:**\n"
-        "Format configuration requires explicit domain: `example@stockgamer.id`",
+    prompt = bot.send_message(
+        message.chat.id, 
+        "🔍 **Enter target Zimbra Mailbox to evaluate verification routing status:**\n"
+        "Format verification template requires complete domain identifier: `example@stockgamer.id`",
         parse_mode="Markdown"
     )
     bot.register_next_step_handler(prompt, execute_live_domain_query)
 
 def execute_live_domain_query(message):
     chat_id = message.chat.id
-    target_address = message.text.strip()
+    target_address = message.text.strip().lower()
     
-    if "@stockgamer.id" not in target_address.lower():
-        bot.send_message(chat_id, "❌ **Invalid Configuration Format:** Target identifier must match the explicit `@stockgamer.id` zone architecture.")
+    if "@stockgamer.id" not in target_address:
+        bot.send_message(chat_id, "❌ **Format Refusal:** Target identifier must match the explicit `@stockgamer.id` zone architecture.")
         return
         
     bot.send_message(chat_id, f"📡 **Handshaking with inbound mail relays for `{target_address}`...**", parse_mode="Markdown")
-    
-    # Process evaluation analysis
     evaluation_result = evaluate_mail_routing_gateway(target_address)
     
     if evaluation_result == "SUBBED":
@@ -311,40 +330,27 @@ def execute_live_domain_query(message):
             f"📊 **Zimbra Domain Routing Status Analysis:**\n\n"
             f"📧 **Mailbox:** `{target_address}`\n"
             f"🟢 **Status:** **SUBBED (Active Delivery Zone)**\n\n"
-            f"⚠️ **Security Notice:** Server inbound flow rules are wide open. All Moonton verification requests will deliver successfully to this address. "
-            f"To secure it from hacker intrusions immediately, call `/protect` to boot up your monitoring safety daemon."
+            f"⚠️ **Security Notice:** Server inbound flow rules are open. All Moonton verification requests will deliver successfully to this address."
         )
     elif evaluation_result == "UNSUBBED_OR_CLONED":
         response_payload = (
             f"📊 **Zimbra Domain Routing Status Analysis:**\n\n"
             f"📧 **Mailbox:** `{target_address}`\n"
             f"🔴 **Status:** **UNSUBBED OR CLONED (Dead Box Zone)**\n\n"
-            f"🔒 **Security Notice:** The target server's inbound routing engine threw clear rejection headers. This means mail delivery paths are closed. "
-            f"Moonton cannot deliver verification codes to this mailbox anymore. The account settings are frozen."
-        )
-    elif evaluation_result == "CONNECTION_FAILURE":
-        response_payload = (
-            f"❌ **Network Interruption:** Connection timeout experienced while performing low-level port 25 evaluations on `mail.stockgamer.id`. "
-            f"The server firewalls might be under heavy load. Please attempt checking again in a couple minutes."
+            f"🔒 **Security Notice:** The target server's inbound routing engine threw clear rejection headers. Mail delivery paths are closed. Moonton cannot deliver codes."
         )
     else:
-        response_payload = "⚠️ **Indeterminate State Mapping:** Gateway responded with unmapped status configurations. Manual review is recommended."
+        response_payload = "❌ **Network Interruption:** Connection timeout experienced while performing evaluations. Please attempt again in a few minutes."
 
     bot.send_message(chat_id, response_payload, parse_mode="Markdown")
 
 @bot.message_handler(commands=['protect'])
+@bot.message_handler(func=lambda msg: msg.text == "🛡️ Protect Account")
 def deploy_protection_sequence(message):
-    chat_id = message.chat.id
-    
-    with session_lock:
-        if chat_id in active_sessions and active_sessions[chat_id]["running"]:
-            bot.reply_to(message, "❌ **Execution Conflict:** You already have a dedicated headless daemon process running live on this conversation stream.")
-            return
-            
-    prompt = bot.reply_to(
-        message, 
+    prompt = bot.send_message(
+        message.chat.id, 
         "⚡ **Enter your account parameters separated by a single space:**\n"
-        "Example structural layout format: `username@stockgamer.id password123`", 
+        "Format structure template: `username@stockgamer.id password123`", 
         parse_mode="Markdown"
     )
     bot.register_next_step_handler(prompt, activate_headless_worker_thread)
@@ -359,15 +365,21 @@ def activate_headless_worker_thread(message):
             bot.reply_to(message, "❌ **Formatting Failure:** Parameters misaligned. Ensure you format your input precisely with a single space separating your account and password.")
             return
             
-        extracted_user = parsing_arguments[0]
+        extracted_user = parsing_arguments[0].lower()
         extracted_pass = parsing_arguments[1]
         
-        if "@stockgamer.id" not in extracted_user.lower():
+        if "@stockgamer.id" not in extracted_user:
             bot.reply_to(message, "❌ **Domain Rejection:** This tool only targets `stockgamer.id` backend structures.")
             return
             
+        session_key = f"{chat_id}-{extracted_user}"
+            
         with session_lock:
-            active_sessions[chat_id] = {
+            if session_key in active_sessions and active_sessions[session_key]["running"]:
+                bot.reply_to(message, f"❌ **Execution Conflict:** A dedicated background daemon is already actively monitoring `{extracted_user}` on your profile.")
+                return
+                
+            active_sessions[session_key] = {
                 "running": True,
                 "email": extracted_user,
                 "password": extracted_pass,
@@ -375,55 +387,78 @@ def activate_headless_worker_thread(message):
                 "codes_intercepted": 0
             }
             
-        # Spawn dedicated background task worker thread allocation
         worker_thread = threading.Thread(target=zimbra_monitor_worker, args=(chat_id, extracted_user, extracted_pass))
         worker_thread.daemon = True
         worker_thread.start()
         
-        bot.reply_to(message, "⏳ **Spawning Headless Chromium Isolation Container...** Establishing initial system connection handles.")
+        bot.reply_to(message, f"⏳ **Spawning Headless Chromium Isolation Container...** Initializing tracking matrix loops for `{extracted_user}`.")
         
     except Exception as deployment_fault:
-        logging.error(f"Failed to process structural system commands setup: {deployment_fault}")
+        logging.error(f"Failed to process commands setup: {deployment_fault}")
         bot.reply_to(message, f"❌ **System Orchestration Exception Generated:** `{deployment_fault}`")
 
 @bot.message_handler(commands=['status'])
+@bot.message_handler(func=lambda msg: msg.text == "📊 Active Monitors")
 def show_thread_performance_dashboard(message):
     chat_id = message.chat.id
+    active_monitors_found = False
+    dashboard_payload = "📊 **Vinzy Anti-Code Active Monitor Profiles:**\n\n"
     
     with session_lock:
-        user_session_exists = chat_id in active_sessions
-        if user_session_exists:
-            session_data = active_sessions[chat_id].copy()
-            
-    if not user_session_exists or not session_data["running"]:
-        bot.reply_to(message, "📊 **System Metrics Dashboard:** No active background scanning loops are attached to this conversation stream right now.")
+        for key, session_data in active_sessions.items():
+            if key.startswith(f"{chat_id}-") and session_data["running"]:
+                active_monitors_found = True
+                running_duration = datetime.now() - session_data["started_at"]
+                hours, remainder = divmod(running_duration.seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                uptime_string = f"{running_duration.days}d {hours}h {minutes}m {seconds}s"
+                
+                dashboard_payload += (
+                    f"📧 **Account:** `{session_data['email']}`\n"
+                    f"⏱️ **Uptime Duration:** `{uptime_string}`\n"
+                    f"🚨 **Codes Intercepted & Purged:** `{session_data['codes_intercepted']}`\n"
+                    f"────────────────────\n"
+                )
+                
+    if not active_monitors_found:
+        bot.reply_to(message, "📊 **System Metrics Dashboard:** You have no background checking threads assigned to your conversation context right now.")
         return
         
-    running_duration = datetime.now() - session_data["started_at"]
-    hours, remainder = divmod(running_duration.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    uptime_string = f"{running_duration.days}d {hours}h {minutes}m {seconds}s"
-    
-    dashboard_payload = (
-        f"📊 **Vinzy Anti-Code Safe Thread Monitor Metrics**\n\n"
-        f"📧 **Monitored Target:** `{session_data['email']}`\n"
-        f"🟢 **Thread Engine Status:** `RUNNING (PERSISTENT)`\n"
-        f"⏱️ **Shield Uptime Duration:** `{uptime_string}`\n"
-        f"🚨 **Codes Intercepted & Purged:** `{session_data['codes_intercepted']}`\n\n"
-        f"⚙️ *System health checks are green. Headless chromium process is performing nominally on Koyeb server containers.*"
-    )
+    dashboard_payload += "⚙️ *All background containers performing nominally on Koyeb server containers.*"
     bot.reply_to(message, dashboard_payload, parse_mode="Markdown")
 
 @bot.message_handler(commands=['stop'])
+@bot.message_handler(func=lambda msg: msg.text == "🛑 Stop Daemon")
 def process_termination_sequence(message):
+    prompt = bot.send_message(
+        message.chat.id, 
+        "🛑 **Enter the specific Zimbra address you wish to stop monitoring:**\n"
+        "Input template: `example@stockgamer.id` or type `ALL` to terminate every process.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(prompt, execute_termination_handler)
+
+def execute_termination_handler(message):
     chat_id = message.chat.id
+    target_action = message.text.strip().lower()
+    terminated_count = 0
     
     with session_lock:
-        if chat_id in active_sessions and active_sessions[chat_id]["running"]:
-            active_sessions[chat_id]["running"] = False
-            bot.reply_to(message, "🛑 **Termination Directive Issued:** Halting thread execution paths and requesting immediate driver garbage collection...")
+        if target_action == "all":
+            for key, session_data in active_sessions.items():
+                if key.startswith(f"{chat_id}-") and session_data["running"]:
+                    active_sessions[key]["running"] = False
+                    terminated_count += 1
         else:
-            bot.reply_to(message, "ℹ️ **System Query:** You have no active script processes attached to your thread profile context.")
+            session_key = f"{chat_id}-{target_action}"
+            if session_key in active_sessions and active_sessions[session_key]["running"]:
+                active_sessions[session_key]["running"] = False
+                terminated_count += 1
+                
+    if terminated_count > 0:
+        bot.reply_to(message, f"🛑 **Termination Directive Issued:** Terminated ({terminated_count}) active scraping threads safely. Reclaiming Koyeb resource containers.")
+    else:
+        bot.reply_to(message, "⚠️ **Process Match Error:** No active matching mail processes were found linked to your user profile context.")
 
 # ==========================================
 # 5. SERVER CONTAINER ENTRY POINT EXECUTION
