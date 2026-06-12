@@ -133,7 +133,7 @@ chrome_options = Options()
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-    
+
     driver = None
     retry_count = 0
     max_consecutive_retries = 8
