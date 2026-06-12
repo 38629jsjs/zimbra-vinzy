@@ -125,8 +125,8 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
     session_key = f"{chat_id}-{email}"
     logging.info(f"Launching independent headless worker instance for target context: {session_key}")
     
-    chrome_options = Options()
-    chrome_options.binary_location = "/usr/bin/chromium"  # Add this specific line
+chrome_options = Options()
+    chrome_options.binary_location = "/usr/bin/chromium"
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -356,11 +356,10 @@ def deploy_protection_sequence(message):
     )
     bot.register_next_step_handler(prompt, activate_headless_worker_thread)
 
-def activate_headless_worker_thread(message):
+ def activate_headless_worker_thread(message):
     chat_id = message.chat.id
     try:
         raw_input = message.text.strip()
-        # Use maxsplit=1 to safely handle inputs even with extra spaces
         parsing_arguments = raw_input.split(maxsplit=1)
         
         if len(parsing_arguments) < 2:
@@ -395,14 +394,8 @@ def activate_headless_worker_thread(message):
         
         bot.reply_to(message, f"⏳ **Spawning Headless Chromium Isolation Container...** Initializing tracking matrix loops for `{extracted_user}`.")
         
-    except Exception as e:
-        logging.error(f"Failed to process deployment: {e}")
-        bot.reply_to(message, "❌ **System Error:** Could not initialize the monitor. Please check your format.")
-        except Exception as deployment_fault:
-        # Keep the detailed error for you in the server logs
+    except Exception as deployment_fault:
         logging.error(f"Failed to process commands setup: {deployment_fault}")
-        
-        # Give the user a simple, clean message
         bot.reply_to(message, "❌ **System Error:** Could not initialize the monitor. Please check your account/password format and try again.")
 
 @bot.message_handler(commands=['status'])
