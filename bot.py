@@ -125,7 +125,8 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
     session_key = f"{chat_id}-{email}"
     logging.info(f"Launching independent headless worker instance for target context: {session_key}")
     
-    chrome_options = Options()
+ chrome_options = Options()
+    chrome_options.binary_location = "/usr/bin/chromium"  # Add this specific line
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -359,10 +360,11 @@ def activate_headless_worker_thread(message):
     chat_id = message.chat.id
     try:
         raw_input = message.text.strip()
-        parsing_arguments = raw_input.split(" ")
+        # Use maxsplit=1 to safely handle inputs even with extra spaces
+        parsing_arguments = raw_input.split(maxsplit=1)
         
-        if len(parsing_arguments) != 2:
-            bot.reply_to(message, "❌ **Formatting Failure:** Parameters misaligned. Ensure you format your input precisely with a single space separating your account and password.")
+        if len(parsing_arguments) < 2:
+            bot.reply_to(message, "❌ **Formatting Failure:** Ensure you format your input precisely with a single space separating your account and password.")
             return
             
         extracted_user = parsing_arguments[0].lower()
@@ -393,9 +395,15 @@ def activate_headless_worker_thread(message):
         
         bot.reply_to(message, f"⏳ **Spawning Headless Chromium Isolation Container...** Initializing tracking matrix loops for `{extracted_user}`.")
         
-    except Exception as deployment_fault:
+    except Exception as e:
+        logging.error(f"Failed to process deployment: {e}")
+        bot.reply_to(message, "❌ **System Error:** Could not initialize the monitor. Please check your format.")
+        except Exception as deployment_fault:
+        # Keep the detailed error for you in the server logs
         logging.error(f"Failed to process commands setup: {deployment_fault}")
-        bot.reply_to(message, f"❌ **System Orchestration Exception Generated:** `{deployment_fault}`")
+        
+        # Give the user a simple, clean message
+        bot.reply_to(message, "❌ **System Error:** Could not initialize the monitor. Please check your account/password format and try again.")
 
 @bot.message_handler(commands=['status'])
 @bot.message_handler(func=lambda msg: msg.text == "📊 Active Monitors")
@@ -440,26 +448,30 @@ def process_termination_sequence(message):
 
 def execute_termination_handler(message):
     chat_id = message.chat.id
-    target_action = message.text.strip().lower()
-    terminated_count = 0
-    
-    with session_lock:
-        if target_action == "all":
-            for key, session_data in active_sessions.items():
-                if key.startswith(f"{chat_id}-") and session_data["running"]:
-                    active_sessions[key]["running"] = False
+    try:
+        target_action = message.text.strip().lower()
+        terminated_count = 0
+        
+        with session_lock:
+            if target_action == "all":
+                for key, session_data in active_sessions.items():
+                    if key.startswith(f"{chat_id}-") and session_data["running"]:
+                        active_sessions[key]["running"] = False
+                        terminated_count += 1
+            else:
+                session_key = f"{chat_id}-{target_action}"
+                if session_key in active_sessions and active_sessions[session_key]["running"]:
+                    active_sessions[session_key]["running"] = False
                     terminated_count += 1
+        
+        if terminated_count > 0:
+            bot.reply_to(message, f"🛑 **Termination Directive Issued:** Terminated ({terminated_count}) active scraping threads safely.")
         else:
-            session_key = f"{chat_id}-{target_action}"
-            if session_key in active_sessions and active_sessions[session_key]["running"]:
-                active_sessions[session_key]["running"] = False
-                terminated_count += 1
-                
-    if terminated_count > 0:
-        bot.reply_to(message, f"🛑 **Termination Directive Issued:** Terminated ({terminated_count}) active scraping threads safely. Reclaiming Koyeb resource containers.")
-    else:
-        bot.reply_to(message, "⚠️ **Process Match Error:** No active matching mail processes were found linked to your user profile context.")
-
+            bot.reply_to(message, "⚠️ **Process Match Error:** No active matching processes found for your profile.")
+            
+    except Exception as e:
+        logging.error(f"Termination sequence failure: {e}")
+        bot.reply_to(message, "❌ **System Error:** Could not complete the termination request safely.")
 # ==========================================
 # 5. SERVER CONTAINER ENTRY POINT EXECUTION
 # ==========================================
