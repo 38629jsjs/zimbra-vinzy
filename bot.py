@@ -125,7 +125,7 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
     session_key = f"{chat_id}-{email}"
     logging.info(f"Launching independent headless worker instance for target context: {session_key}")
     
- chrome_options = Options()
+    chrome_options = Options()
     chrome_options.binary_location = "/usr/bin/chromium"  # Add this specific line
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
